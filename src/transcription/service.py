@@ -44,17 +44,17 @@ class TranscriptionService:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: Optional[str] = None,
         retry_strategy: Optional[ExponentialBackoffRetry] = None,
     ) -> None:
         """
         Initialize transcription service.
 
         Args:
-            api_key: OpenAI API key
+            api_key: OpenAI API key (optional - can be set later via update_api_key)
             retry_strategy: Retry strategy for handling failures (default: 4 attempts)
         """
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key) if api_key else None
         self.retry_strategy = retry_strategy or ExponentialBackoffRetry(
             max_attempts=4, base_delay=1.0
         )
@@ -72,8 +72,12 @@ class TranscriptionService:
 
         Raises:
             TranscriptionError: If transcription fails after all retries
-            ValueError: If audio file doesn't exist or is too large
+            ValueError: If audio file doesn't exist or is too large or API key not set
         """
+        # Validate API key is set
+        if not self.client:
+            raise ValueError("API key not set. Please configure your OpenAI API key.")
+
         # Validate input
         if not audio_file_path.exists():
             raise ValueError(f"Audio file not found: {audio_file_path}")
@@ -145,16 +149,34 @@ class TranscriptionService:
             # Unexpected error
             raise TranscriptionError(f"Unexpected error: {e}") from e
 
-    def validate_api_key(self) -> bool:
+    def update_api_key(self, api_key: str) -> None:
         """
-        Validate that the API key is working.
+        Update the API key and recreate the OpenAI client.
+
+        Args:
+            api_key: New OpenAI API key
+        """
+        self.client = OpenAI(api_key=api_key)
+
+    def validate_api_key(self, api_key: Optional[str] = None) -> bool:
+        """
+        Validate that an API key is working.
+
+        Args:
+            api_key: Optional API key to validate. If None, validates current client.
 
         Returns:
             True if API key is valid, False otherwise
         """
         try:
+            # If a specific key is provided, create a temporary client
+            client = OpenAI(api_key=api_key) if api_key else self.client
+
+            if not client:
+                return False
+
             # Try to list models as a simple validation
-            self.client.models.list()
+            client.models.list()
             return True
         except Exception as e:
             print(f"API key validation failed: {e}")

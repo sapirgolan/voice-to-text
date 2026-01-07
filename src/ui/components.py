@@ -211,3 +211,137 @@ class StatusBar(ctk.CTkFrame):
         # Auto-clear non-error messages after 5 seconds
         if message_type != "error":
             self.after(5000, lambda: self.label.configure(text="Ready", text_color="gray"))
+
+
+class ApiKeyInput(ctk.CTkEntry):
+    """
+    Masked API key input component.
+
+    Shows only the last 4 characters of the API key, masking the rest.
+    Note: This is a simplified masking implementation. For production use,
+    consider a more robust solution that handles cursor position and selection.
+    """
+
+    def __init__(self, parent: ctk.CTk, **kwargs) -> None:
+        """
+        Initialize API key input.
+
+        Args:
+            parent: Parent widget
+            **kwargs: Additional arguments for CTkEntry
+        """
+        # Set default width if not provided
+        kwargs.setdefault("width", 300)
+        kwargs.setdefault("placeholder_text", "Enter OpenAI API Key")
+
+        super().__init__(parent, **kwargs)
+
+        self._actual_value = ""
+        self._updating = False
+        self._last_displayed_length = 0
+
+        # Bind to multiple events for better tracking
+        self.bind("<KeyRelease>", self._on_change)
+        self.bind("<<Paste>>", self._on_paste)
+
+    def _on_change(self, event=None) -> None:
+        """
+        Handle input changes to implement masking.
+
+        Args:
+            event: Tkinter event
+        """
+        if self._updating:
+            return
+
+        current_display = self.get()
+        current_length = len(current_display)
+
+        # Detect if characters were added or removed
+        if current_length > self._last_displayed_length:
+            # Characters added - append to actual value
+            new_chars_count = current_length - self._last_displayed_length
+            # Extract new characters from end (they appear after bullets)
+            new_chars = current_display[-new_chars_count:]
+            self._actual_value += new_chars
+        elif current_length < self._last_displayed_length:
+            # Characters removed
+            chars_removed = self._last_displayed_length - current_length
+            self._actual_value = self._actual_value[:-chars_removed] if chars_removed <= len(self._actual_value) else ""
+
+        # Update display with masked value
+        self._update_display()
+
+    def _on_paste(self, event=None) -> None:
+        """
+        Handle paste operations.
+
+        Args:
+            event: Tkinter event
+        """
+        # Schedule handling after paste completes
+        self.after(10, self._on_change)
+
+    def _get_masked_value(self, value: str) -> str:
+        """
+        Get masked representation of value.
+
+        Shows last 4 characters, masks the rest with bullets.
+
+        Args:
+            value: Actual value to mask
+
+        Returns:
+            Masked string
+        """
+        if len(value) <= 4:
+            return value
+
+        masked_part = "•" * (len(value) - 4)
+        visible_part = value[-4:]
+        return masked_part + visible_part
+
+    def _update_display(self) -> None:
+        """Update the display with masked value."""
+        self._updating = True
+
+        masked = self._get_masked_value(self._actual_value)
+        self._last_displayed_length = len(masked)
+
+        # Store cursor position
+        cursor_pos = self.index("insert")
+
+        self.delete(0, "end")
+        self.insert(0, masked)
+
+        # Restore cursor to end
+        self.icursor("end")
+
+        self._updating = False
+
+    def get_value(self) -> str:
+        """
+        Get the actual (unmasked) value.
+
+        Returns:
+            Actual API key value
+        """
+        return self._actual_value
+
+    def set_value(self, value: str) -> None:
+        """
+        Set the value programmatically.
+
+        Args:
+            value: Value to set
+        """
+        self._actual_value = value
+        self._update_display()
+
+    def clear_value(self) -> None:
+        """Clear the input value."""
+        self._actual_value = ""
+        self._last_displayed_length = 0
+        self._updating = True
+        self.delete(0, "end")
+        self._updating = False

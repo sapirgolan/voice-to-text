@@ -6,9 +6,10 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from ..audio import AudioFeedback, AudioRecorder
+from ..config import SettingsManager
 from ..transcription import TranscriptionService
 from ..utils import ClipboardManager, run_in_thread_with_callback
-from .components import LanguageSelector, RecordingIndicator, StatusBar, TranscriptTextBox
+from .components import ApiKeyInput, LanguageSelector, RecordingIndicator, StatusBar, TranscriptTextBox
 
 
 class MainWindow(ctk.CTk):
@@ -19,6 +20,7 @@ class MainWindow(ctk.CTk):
         recorder: AudioRecorder,
         transcription_service: TranscriptionService,
         audio_feedback: AudioFeedback,
+        settings_manager: SettingsManager,
     ) -> None:
         """
         Initialize main window.
@@ -27,17 +29,20 @@ class MainWindow(ctk.CTk):
             recorder: Audio recorder instance
             transcription_service: Transcription service instance
             audio_feedback: Audio feedback instance
+            settings_manager: Settings manager instance
         """
         super().__init__()
 
         self.recorder = recorder
         self.transcription_service = transcription_service
         self.audio_feedback = audio_feedback
+        self.settings_manager = settings_manager
         self.clipboard = ClipboardManager()
 
         self._setup_window()
         self._create_widgets()
         self._layout_widgets()
+        self._initialize_api_key_display()
 
     def _setup_window(self) -> None:
         """Setup window properties."""
@@ -56,6 +61,27 @@ class MainWindow(ctk.CTk):
             self,
             text="Voice to Text Transcription",
             font=("Arial", 20, "bold"),
+        )
+
+        # API Key settings frame
+        self.api_key_frame = ctk.CTkFrame(self)
+        self.api_key_label = ctk.CTkLabel(
+            self.api_key_frame,
+            text="API Key:",
+            font=("Arial", 12),
+        )
+        self.api_key_input = ApiKeyInput(self.api_key_frame, width=300)
+        self.api_key_apply_button = ctk.CTkButton(
+            self.api_key_frame,
+            text="Apply",
+            command=self._on_apply_api_key,
+            width=80,
+        )
+        self.api_key_reset_button = ctk.CTkButton(
+            self.api_key_frame,
+            text="Reset to Default",
+            command=self._on_reset_api_key,
+            width=120,
         )
 
         # Language selector
@@ -111,6 +137,13 @@ class MainWindow(ctk.CTk):
         """Layout all widgets."""
         # Title
         self.title_label.pack(pady=20)
+
+        # API Key frame
+        self.api_key_frame.pack(pady=10, fill="x", padx=20)
+        self.api_key_label.pack(side="left", padx=10)
+        self.api_key_input.pack(side="left", padx=5)
+        self.api_key_apply_button.pack(side="left", padx=5)
+        self.api_key_reset_button.pack(side="left", padx=5)
 
         # Language selector
         self.language_frame.pack(pady=10, fill="x", padx=20)
@@ -329,3 +362,106 @@ class MainWindow(ctk.CTk):
         )
         self.language_selector.configure(state="normal")
         self.recording_indicator.reset()
+
+    def _initialize_api_key_display(self) -> None:
+        """Initialize API key input field with current value."""
+        current_key = self.settings_manager.get_api_key()
+        if current_key:
+            self.api_key_input.set_value(current_key)
+
+    def _on_apply_api_key(self) -> None:
+        """Handle apply API key button click."""
+        new_key = self.api_key_input.get_value()
+
+        if not new_key or not new_key.strip():
+            self.status_bar.set_message("Please enter an API key", "error")
+            return
+
+        # Disable buttons during validation
+        self.api_key_apply_button.configure(state="disabled")
+        self.api_key_reset_button.configure(state="disabled")
+        self.status_bar.set_message("Validating API key...", "info")
+
+        # Validate in background thread
+        run_in_thread_with_callback(
+            lambda: self.transcription_service.validate_api_key(new_key),
+            callback=lambda is_valid: self._on_api_key_validated(new_key, is_valid),
+            error_callback=lambda e: self._on_api_key_validation_error(e),
+        )
+
+    def _on_api_key_validated(self, api_key: str, is_valid: bool) -> None:
+        """
+        Callback when API key validation completes.
+
+        Args:
+            api_key: The API key that was validated
+            is_valid: Whether the key is valid
+        """
+        # Schedule UI update on main thread
+        self.after(0, lambda: self._handle_api_key_validated(api_key, is_valid))
+
+    def _handle_api_key_validated(self, api_key: str, is_valid: bool) -> None:
+        """
+        Handle API key validation result on main thread.
+
+        Args:
+            api_key: The API key that was validated
+            is_valid: Whether the key is valid
+        """
+        # Re-enable buttons
+        self.api_key_apply_button.configure(state="normal")
+        self.api_key_reset_button.configure(state="normal")
+
+        if not is_valid:
+            self.status_bar.set_message(
+                "Invalid API key. Please check your key and try again.", "error"
+            )
+            return
+
+        # Save the key using settings manager
+        validator = lambda k: True  # Already validated
+        if self.settings_manager.update_api_key(api_key, validator):
+            # Update the transcription service
+            self.transcription_service.update_api_key(api_key)
+            self.status_bar.set_message("API key updated successfully!", "success")
+        else:
+            self.status_bar.set_message("Failed to save API key", "error")
+
+    def _on_api_key_validation_error(self, error: Exception) -> None:
+        """
+        Callback when API key validation fails with an error.
+
+        Args:
+            error: The exception that occurred
+        """
+        # Schedule UI update on main thread
+        self.after(0, lambda: self._handle_api_key_validation_error(error))
+
+    def _handle_api_key_validation_error(self, error: Exception) -> None:
+        """
+        Handle API key validation error on main thread.
+
+        Args:
+            error: The exception that occurred
+        """
+        # Re-enable buttons
+        self.api_key_apply_button.configure(state="normal")
+        self.api_key_reset_button.configure(state="normal")
+
+        self.status_bar.set_message(f"Validation error: {error}", "error")
+
+    def _on_reset_api_key(self) -> None:
+        """Handle reset API key button click."""
+        default_key = self.settings_manager.reset_api_key()
+
+        if default_key:
+            # Update UI and service
+            self.api_key_input.set_value(default_key)
+            self.transcription_service.update_api_key(default_key)
+            self.status_bar.set_message("API key reset to default", "success")
+        else:
+            # Clear the input if no default
+            self.api_key_input.clear_value()
+            self.status_bar.set_message(
+                "No default API key found in .env file", "error"
+            )

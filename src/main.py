@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from src.audio import AudioFeedback, AudioRecorder
-from src.config import Config
+from src.config import Config, JSONSettingsPersistence, SettingsManager
 from src.transcription import TranscriptionService
 from src.ui import MainWindow
 
@@ -20,8 +20,20 @@ def main() -> int:
         # Load configuration
         print("Loading configuration...")
         config = Config.load_from_env()
-        config.validate()
+        # Don't require API key from .env - it can be set through UI
+        config.validate(require_api_key=False)
         print("Configuration loaded successfully")
+
+        # Initialize settings persistence and manager
+        print("Initializing settings manager...")
+        persistence = JSONSettingsPersistence()
+        settings_manager = SettingsManager(
+            persistence=persistence,
+            default_api_key=config.api_key,
+        )
+
+        # Get effective API key (user override or default)
+        effective_api_key = settings_manager.get_api_key()
 
         # Initialize components
         print("Initializing components...")
@@ -33,18 +45,21 @@ def main() -> int:
             max_duration=config.max_recording_duration,
         )
 
-        # Transcription service
-        transcription_service = TranscriptionService(api_key=config.api_key)
+        # Transcription service (may start without API key)
+        transcription_service = TranscriptionService(api_key=effective_api_key)
 
-        # Validate API key (skip if network issues during startup)
-        print("Validating OpenAI API key...")
-        try:
-            if not transcription_service.validate_api_key():
-                print("Warning: Could not validate OpenAI API key")
+        # Validate API key if available (skip if network issues during startup)
+        if effective_api_key:
+            print("Validating OpenAI API key...")
+            try:
+                if not transcription_service.validate_api_key():
+                    print("Warning: Could not validate OpenAI API key")
+                    print("The key will be validated when you make your first transcription")
+            except Exception as e:
+                print(f"Warning: Could not validate API key during startup: {e}")
                 print("The key will be validated when you make your first transcription")
-        except Exception as e:
-            print(f"Warning: Could not validate API key during startup: {e}")
-            print("The key will be validated when you make your first transcription")
+        else:
+            print("No API key configured. Please enter your OpenAI API key in the application.")
 
         # Audio feedback
         audio_feedback = AudioFeedback()
@@ -57,6 +72,7 @@ def main() -> int:
             recorder=recorder,
             transcription_service=transcription_service,
             audio_feedback=audio_feedback,
+            settings_manager=settings_manager,
         )
 
         app.mainloop()
@@ -65,8 +81,6 @@ def main() -> int:
 
     except ValueError as e:
         print(f"Configuration error: {e}")
-        print("\nPlease create a .env file in the project root with:")
-        print("OPENAI_API_KEY=your-api-key-here")
         return 1
 
     except Exception as e:

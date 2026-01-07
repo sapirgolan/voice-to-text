@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 class Config:
     """Application configuration loaded from environment variables."""
 
-    api_key: str
+    api_key: Optional[str] = None
     max_recording_duration: int = 300  # 5 minutes in seconds
     sample_rate: int = 16000  # 16kHz optimal for speech recognition
     channels: int = 1  # Mono audio
@@ -30,10 +30,7 @@ class Config:
             env_path: Optional path to .env file. If None, searches in current and parent dirs.
 
         Returns:
-            Config instance with loaded settings.
-
-        Raises:
-            ValueError: If OPENAI_API_KEY is not found in environment.
+            Config instance with loaded settings. API key may be None if not found in .env.
         """
         if env_path:
             load_dotenv(env_path, override=True)
@@ -47,23 +44,22 @@ class Config:
                     break
 
         api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "OPENAI_API_KEY not found in environment. "
-                "Please create a .env file with your OpenAI API key."
-            )
-
         return cls(api_key=api_key)
 
-    def validate(self) -> None:
+    def validate(self, require_api_key: bool = True) -> None:
         """
         Validate configuration values.
+
+        Args:
+            require_api_key: If True, raises error if API key is missing or invalid.
+                           If False, skips API key validation.
 
         Raises:
             ValueError: If any configuration value is invalid.
         """
-        if not self.api_key or not self.api_key.startswith("sk-"):
-            raise ValueError("Invalid OpenAI API key format. Key should start with 'sk-'")
+        if require_api_key:
+            if not self.api_key or not self.api_key.startswith("sk-"):
+                raise ValueError("Invalid OpenAI API key format. Key should start with 'sk-'")
 
         if self.max_recording_duration <= 0:
             raise ValueError("Max recording duration must be positive")
@@ -76,3 +72,16 @@ class Config:
 
         if self.max_retry_attempts < 1:
             raise ValueError("Max retry attempts must be at least 1")
+
+    @staticmethod
+    def validate_api_key_format(api_key: str) -> bool:
+        """
+        Validate API key format (basic check).
+
+        Args:
+            api_key: API key to validate.
+
+        Returns:
+            True if format is valid, False otherwise.
+        """
+        return bool(api_key and api_key.startswith("sk-"))
