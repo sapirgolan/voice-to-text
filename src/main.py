@@ -46,7 +46,12 @@ def main() -> int:
         )
 
         # Transcription service (may start without API key)
-        transcription_service = TranscriptionService(api_key=effective_api_key)
+        transcription_service = TranscriptionService(
+            api_key=effective_api_key,
+            client_max_age=config.client_max_age,
+            keepalive_expiry=config.keepalive_expiry,
+            api_timeout=config.api_timeout,
+        )
 
         # Validate API key if available (skip if network issues during startup)
         if effective_api_key:

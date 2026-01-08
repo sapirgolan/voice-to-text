@@ -21,6 +21,11 @@ class Config:
     max_retry_attempts: int = 4
     retry_base_delay: float = 1.0  # Seconds for exponential backoff
 
+    # OpenAI client connection settings
+    client_max_age: int = 3600  # 1 hour - refresh client after this duration
+    keepalive_expiry: float = 300.0  # 5 minutes - keep connections alive
+    api_timeout: float = 60.0  # 60 seconds - total timeout for API calls
+
     @classmethod
     def load_from_env(cls, env_path: Optional[Path] = None) -> "Config":
         """

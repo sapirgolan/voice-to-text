@@ -1,9 +1,11 @@
 """Transcription service using OpenAI Whisper API."""
 
 import os
+import time
 from pathlib import Path
 from typing import Optional, Protocol
 
+import httpx
 from openai import APIConnectionError, APIError, OpenAI, RateLimitError
 
 from .retry_strategy import ExponentialBackoffRetry
@@ -46,6 +48,9 @@ class TranscriptionService:
         self,
         api_key: Optional[str] = None,
         retry_strategy: Optional[ExponentialBackoffRetry] = None,
+        client_max_age: int = 3600,
+        keepalive_expiry: float = 300.0,
+        api_timeout: float = 60.0,
     ) -> None:
         """
         Initialize transcription service.
@@ -53,11 +58,88 @@ class TranscriptionService:
         Args:
             api_key: OpenAI API key (optional - can be set later via update_api_key)
             retry_strategy: Retry strategy for handling failures (default: 4 attempts)
+            client_max_age: Maximum age of client in seconds before refresh (default: 1 hour)
+            keepalive_expiry: Connection keep-alive duration in seconds (default: 5 minutes)
+            api_timeout: Total timeout for API calls in seconds (default: 60 seconds)
         """
-        self.client = OpenAI(api_key=api_key) if api_key else None
+        self.api_key = api_key
         self.retry_strategy = retry_strategy or ExponentialBackoffRetry(
             max_attempts=4, base_delay=1.0
         )
+        self.client_max_age = client_max_age
+        self.keepalive_expiry = keepalive_expiry
+        self.api_timeout = api_timeout
+        self._last_use_time: Optional[float] = None
+        self.client: Optional[OpenAI] = None
+        self._create_client()
+
+    def _create_client(self) -> None:
+        """
+        Create or recreate the OpenAI client with connection pool configuration.
+
+        Configures httpx with:
+        - Extended keep-alive timeout to prevent premature connection closure
+        - Proper timeout settings to avoid hanging on stale connections
+        """
+        # Close existing client's HTTP client to prevent resource leaks
+        if self.client is not None:
+            try:
+                # Access the underlying httpx client and close it
+                if hasattr(self.client, '_client') and hasattr(self.client._client, 'close'):
+                    self.client._client.close()
+            except Exception as e:
+                print(f"Warning: Failed to close old httpx client: {e}")
+
+        if not self.api_key:
+            self.client = None
+            self._last_use_time = None
+            return
+
+        # Configure httpx client with NO connection pooling
+        # Connection pooling causes stale connection timeouts after idle periods
+        # Set max_keepalive_connections=0 to disable pooling and force fresh connections
+        http_client = httpx.Client(
+            timeout=httpx.Timeout(
+                timeout=self.api_timeout,
+                connect=self.api_timeout,
+                read=self.api_timeout,
+                write=30.0,
+                pool=10.0,
+            ),
+            limits=httpx.Limits(
+                max_keepalive_connections=0,  # Disable connection pooling
+                max_connections=10,  # Limit concurrent connections
+            ),
+        )
+
+        self.client = OpenAI(api_key=self.api_key, http_client=http_client)
+        self._last_use_time = time.time()
+        print(f"OpenAI client created/refreshed at {time.strftime('%H:%M:%S')}")
+
+    def _ensure_fresh_client(self) -> None:
+        """
+        Ensure the client is fresh and ready to use.
+
+        Recreates the client if:
+        - No client exists
+        - Client is older than client_max_age (prevents long-term staleness)
+        """
+        if self.client is None:
+            print("No client exists, creating new one")
+            self._create_client()
+            return
+
+        if self._last_use_time is None:
+            print("No last use time recorded, creating new client")
+            self._create_client()
+            return
+
+        age = time.time() - self._last_use_time
+        if age > self.client_max_age:
+            print(
+                f"Client is {age:.0f}s old (max: {self.client_max_age}s), creating new client"
+            )
+            self._create_client()
 
     def transcribe(self, audio_file_path: Path, language: Optional[str] = None) -> str:
         """
@@ -74,6 +156,9 @@ class TranscriptionService:
             TranscriptionError: If transcription fails after all retries
             ValueError: If audio file doesn't exist or is too large or API key not set
         """
+        # Ensure we have a fresh, working client
+        self._ensure_fresh_client()
+
         # Validate API key is set
         if not self.client:
             raise ValueError("API key not set. Please configure your OpenAI API key.")
@@ -133,7 +218,9 @@ class TranscriptionService:
             raise TranscriptionError(f"Rate limit exceeded: {e}") from e
 
         except APIConnectionError as e:
-            # Network error - should retry
+            # Network error - could be stale connection, recreate client for next retry
+            print("Connection error detected, will recreate client for next attempt")
+            self._create_client()
             raise TranscriptionError(f"Connection error: {e}") from e
 
         except APIError as e:
@@ -156,7 +243,8 @@ class TranscriptionService:
         Args:
             api_key: New OpenAI API key
         """
-        self.client = OpenAI(api_key=api_key)
+        self.api_key = api_key
+        self._create_client()
 
     def validate_api_key(self, api_key: Optional[str] = None) -> bool:
         """
